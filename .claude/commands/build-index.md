@@ -6,7 +6,7 @@ The folddisco databases live on an NFS disk. Mount it to your VM first:
 
 ```bash
 sudo mkdir -p /mnt/folddisco-data
-sudo mount -t nfs 10.165.165.250:/shared/folddisco-data /mnt/folddisco-data
+sudo mount -t nfs folddisco-nfs.genesis.internal:/shared/folddisco-data /mnt/folddisco-data
 ```
 
 Verify the mount:
@@ -116,7 +116,7 @@ curl http://folddisco-web.playground.genesistherapeutics.ai/api/databases
 
 ## Architecture notes
 
-- **NFS mount on VM:** `10.165.165.250:/shared/folddisco-data` -> `/mnt/folddisco-data`
+- **NFS mount on VM:** `folddisco-nfs.genesis.internal:/shared/folddisco-data` -> `/mnt/folddisco-data`
 - **NFS mount in pods:** same NFS share mounted at `/data`
 - **The path bug:** `load_path()` stores paths relative to CWD. Worker pods run with CWD `/`,
   so relative paths like `my_structures/foo.cif` resolve to `/my_structures/foo.cif` (wrong).
