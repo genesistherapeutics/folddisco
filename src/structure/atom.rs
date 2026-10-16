@@ -1,12 +1,8 @@
+use crate::structure::chain_id::ChainId;
 use crate::structure::coordinate::{Coordinate, CoordinateVector};
 
-/// Low-level atom representation. Must stay `#[repr(C)]` with this exact field layout
-/// for zero-copy FFI compatibility with foldcomp's `atom_t` (see `fcz.rs`).
-///
-/// NOTE: `chain` is a single byte here for FFI layout reasons. The full chain name
-/// (which may be multi-character for CIF structures) is carried separately via
-/// `Structure::update`'s `chain_name` parameter and stored in `AtomVector.chain` as `String`.
-/// Do not rely on `Atom.chain` for chain identity outside the foldcomp FFI path.
+/// A single atom. Layout matches Foldcomp's C `atom_t` (see `Atom::from_c`), so `chain`
+/// is one byte; full chain IDs live in [`AtomVector::chain`].
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct Atom {
@@ -22,7 +18,6 @@ pub struct Atom {
 }
 
 impl Atom {
-    // Constructor
     pub fn new(
         x: f32,
         y: f32,
@@ -76,7 +71,7 @@ impl Atom {
     }
 }
 
-/// AtomVector
+/// Atoms of a structure stored column-wise.
 #[derive(Debug, Clone)]
 pub struct AtomVector {
     pub coordinates: CoordinateVector,
@@ -84,7 +79,7 @@ pub struct AtomVector {
     pub atom_serial: Vec<u64>,
     pub res_name: Vec<[u8; 3]>,
     pub res_serial: Vec<u64>,
-    pub chain: Vec<String>,
+    pub chain: Vec<ChainId>,
     pub b_factor: Vec<f32>,
 }
 
@@ -110,7 +105,7 @@ impl AtomVector {
         atom_serial: u64,
         res_name: [u8; 3],
         res_serial: u64,
-        chain: String,
+        chain: ChainId,
         b_factor: f32,
     ) {
         self.atom_name.push(atom_name);
@@ -125,7 +120,14 @@ impl AtomVector {
         self.b_factor.push(b_factor);
     }
 
-    pub fn push_atom(&mut self, atom: Atom, chain_name: String) {
+    /// Push an atom whose chain ID fits in one byte (PDB records, Foldcomp).
+    pub fn push_atom(&mut self, atom: Atom) {
+        let chain = ChainId::from_byte(atom.chain);
+        self.push_atom_with_chain(atom, chain);
+    }
+
+    /// Push an atom with a full chain ID (mmCIF `auth_asym_id` / `label_asym_id`).
+    pub fn push_atom_with_chain(&mut self, atom: Atom, chain: ChainId) {
         self.atom_name.push(atom.atom_name);
         self.coordinates.x.push(atom.x);
         self.coordinates.y.push(atom.y);
@@ -134,7 +136,7 @@ impl AtomVector {
         self.atom_serial.push(atom.atom_serial);
         self.res_name.push(atom.res_name);
         self.res_serial.push(atom.res_serial);
-        self.chain.push(chain_name);
+        self.chain.push(chain);
         self.b_factor.push(atom.b_factor);
     }
 
@@ -149,7 +151,8 @@ impl AtomVector {
             // res_name: self.res_name[index].clone(),
             res_name: self.res_name[index],
             res_serial: self.res_serial[index],
-            chain: self.chain[index].as_bytes().first().copied().unwrap_or(b' '),
+            // Narrows a multi-character chain ID; `Atom` is the FFI-shaped view.
+            chain: self.chain[index].first_byte(),
             b_factor: self.b_factor[index],
         }
     }
@@ -194,21 +197,19 @@ impl AtomVector {
         self.atom_name[index]
     }
 
-    // IMPORTANT: LET'S STICK TO 0-BASED INDEXING AS IN RUST
-
+    /// Atoms of the 0-based `n`th residue, i.e. residue serial `n + 1`.
     pub fn get_nth_residue(&self, n: usize) -> AtomVector {
-        //TODO: n 0-base or 1-base?
         let mut nth_vector = AtomVector::new();
         for i in 0..self.len() {
             if self.get_res_serial(i) as usize == n + 1 {
-                nth_vector.push_atom(self.get(i), self.chain[i].clone());
+                nth_vector.push_atom_with_chain(self.get(i), self.chain[i]);
             }
         }
         nth_vector
     }
 
+    /// N atom of residue serial `n + 1`, or an empty atom.
     pub fn get_nth_n(&self, n: usize) -> Atom {
-        //TODO: n 0-base (or 1-base)?
         for i in 0..self.len() {
             if (self.get_res_serial(i) as usize == n + 1) && self.is_n(i) {
                 return self.get(i);
@@ -217,8 +218,8 @@ impl AtomVector {
         Atom::new_empty()
     }
 
+    /// CA atom of residue serial `n + 1`, or an empty atom.
     pub fn get_nth_ca(&self, n: usize) -> Atom {
-        //TODO: n 0-base or (1-base)?
         for i in 0..self.len() {
             if (self.get_res_serial(i) as usize == n + 1) && self.is_ca(i) {
                 return self.get(i);
@@ -227,8 +228,8 @@ impl AtomVector {
         Atom::new_empty()
     }
 
+    /// C atom of residue serial `n + 1`, or an empty atom.
     pub fn get_nth_c(&self, n: usize) -> Atom {
-        //TODO: n 0-base or (1-base)?
         for i in 0..self.len() {
             if (self.get_res_serial(i) as usize == n + 1) && self.is_c(i) {
                 return self.get(i);
