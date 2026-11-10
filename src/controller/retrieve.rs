@@ -25,6 +25,13 @@ use crate::structure::io::fcz::FoldcompDbReader;
 const PREFILTER_AA_SKIPPING_SIZE: usize = 200; // Above this, prefilter by amino acid code instead of name
 const RESIDUE_RESCUE_COUNT_CUTOFF: usize = 2; 
 
+fn clear_query_match(matches: &mut [ResidueMatch], all_query_indices: &[usize], query_index: usize) {
+    // Match slots include gaps; compact coordinate indices do not.
+    let position = all_query_indices.iter().position(|&index| index == query_index)
+        .expect("matched query residue must belong to the motif");
+    matches[position] = None;
+}
+
 /// Distinct (aa1, aa2) codes decoded from `hash_vec` with default binning.
 pub fn hash_vec_to_aa_pairs(hash_vec: &Vec<GeometricHash>) -> HashSet<(u32, u32)> {
     let mut output: HashSet<(u32, u32)> = HashSet::default();
@@ -250,7 +257,7 @@ pub fn retrieval_wrapper_for_foldcompdb(
                 } else {
                     // Rare: replace the previous entry
                     if let Some(prev_pos) = retrieved_indices_scanned.iter().position(|&x| x == retrieved_index) {
-                        res_vec[prev_pos] = None;
+                        clear_query_match(&mut res_vec, all_query_indices, query_indices_scanned[prev_pos]);
                         res_vec.push(Some((chain, res_ind)));
                         query_indices_scanned.remove(prev_pos);
                         retrieved_indices_scanned.remove(prev_pos);
@@ -418,7 +425,7 @@ pub fn retrieval_wrapper(
                 } else {
                     // Rare: replace the previous entry
                     if let Some(prev_pos) = retrieved_indices_scanned.iter().position(|&x| x == retrieved_index) {
-                        res_vec[prev_pos] = None;
+                        clear_query_match(&mut res_vec, all_query_indices, query_indices_scanned[prev_pos]);
                         res_vec.push(Some((chain, res_ind)));
                         query_indices_scanned.remove(prev_pos);
                         retrieved_indices_scanned.remove(prev_pos);
@@ -845,6 +852,43 @@ mod tests {
     use super::*;
 
     use crate::controller::expand::ToleranceConfig;
+
+    #[test]
+    fn duplicate_replacement_preserves_gapped_match_coordinates() {
+        let chain = ChainId::from_byte(b'A');
+        let all_query_indices = [10, 20, 30, 40, 50, 60];
+        let mut matches = vec![None, Some((chain, 101)), None, Some((chain, 102))];
+        let mut query_indices = vec![20, 40];
+        let mut target_indices = vec![101, 102];
+
+        // Replace the same target twice, leaving holes before and between matches.
+        for query_index in [50, 60] {
+            let previous = target_indices.iter().position(|&index| index == 102).unwrap();
+            clear_query_match(&mut matches, &all_query_indices, query_indices[previous]);
+            matches.push(Some((chain, 102)));
+            query_indices.remove(previous);
+            target_indices.remove(previous);
+            query_indices.push(query_index);
+            target_indices.push(102);
+
+            let matched_queries: Vec<_> = all_query_indices.iter().zip(&matches)
+                .filter_map(|(&query, target)| target.map(|_| query)).collect();
+            let matched_targets: Vec<_> = matches.iter()
+                .filter_map(|target| target.map(|(_, residue)| residue)).collect();
+            assert_eq!(matched_queries, query_indices);
+            assert_eq!(matched_targets, target_indices);
+        }
+        assert_eq!(matches, vec![None, Some((chain, 101)), None, None, None, Some((chain, 102))]);
+    }
+
+    #[test]
+    fn duplicate_replacement_without_gaps() {
+        let chain = ChainId::from_byte(b'A');
+        let mut matches = vec![Some((chain, 101)), Some((chain, 102))];
+        clear_query_match(&mut matches, &[10, 20, 30], 10);
+        matches.push(Some((chain, 101)));
+        assert_eq!(matches, vec![None, Some((chain, 102)), Some((chain, 101))]);
+    }
 
     #[test]
     fn non_exact_edges_score_only_between_matched_residues() {
