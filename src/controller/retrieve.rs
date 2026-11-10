@@ -26,8 +26,9 @@ const PREFILTER_AA_SKIPPING_SIZE: usize = 200; // Above this, prefilter by amino
 const RESIDUE_RESCUE_COUNT_CUTOFF: usize = 2; 
 
 fn clear_query_match(matches: &mut [ResidueMatch], all_query_indices: &[usize], query_index: usize) {
-    // Match slots include gaps; compact coordinate indices do not.
-    let position = all_query_indices.iter().position(|&index| index == query_index)
+    // Find the active motif slot, including when a query residue is repeated.
+    let position = all_query_indices.iter().zip(matches.iter())
+        .rposition(|(&index, matched)| index == query_index && matched.is_some())
         .expect("matched query residue must belong to the motif");
     matches[position] = None;
 }
@@ -879,6 +880,85 @@ mod tests {
             assert_eq!(matched_targets, target_indices);
         }
         assert_eq!(matches, vec![None, Some((chain, 101)), None, None, None, Some((chain, 102))]);
+    }
+
+    #[test]
+    fn duplicate_replacement_with_repeated_query_residues() {
+        let chain = ChainId::from_byte(b'A');
+        let mut matches = vec![None, Some((chain, 101)), Some((chain, 102))];
+        let indices = [0, 10, 20, 20, 20];
+        for _ in 0..2 {
+            clear_query_match(&mut matches, &indices, 20);
+            matches.push(Some((chain, 102)));
+        }
+        assert_eq!(matches, vec![None, Some((chain, 101)), None, None, Some((chain, 102))]);
+    }
+
+    #[test]
+    fn retrieval_replacement_preserves_coordinate_correspondence() {
+        let path = String::from("data/serine_peptidases/4cha.pdb");
+        let query = read_structure_from_path(&path).unwrap().to_compact();
+        let (residues, subs) = parse_query_string("B57,B102,C195", ChainId::from_byte(b'A'));
+        let (query_map, indices, aa_dist_map) = make_query_map(
+            &path, &residues, HashType::PDBTrRosetta, 16, 4, &None,
+            &ToleranceConfig::default_query(), &subs, 20.0, false, &None, 1000.0,
+        );
+        let hashes = query_map.keys().cloned().collect();
+        let gap = (0..query.num_residues).find(|index| !indices.contains(index)).unwrap();
+        let motif = vec![gap, indices[0], indices[1], indices[1], indices[1], indices[2]];
+        let (_, hits, _, _, _) = retrieval_wrapper(
+            &path, 3, &hashes, HashType::PDBTrRosetta, 16, 4, &None, 20.0,
+            &query_map, &query, &motif, &aa_dist_map, 1.0, false,
+        );
+        assert!(!hits.is_empty());
+        for (matches, _, _, _, coordinates, _, _) in hits {
+            assert_eq!(matches.len(), motif.len());
+            assert!(matches[0].is_none());
+            assert!(matches[2].is_none());
+            assert!(matches[3].is_none());
+            assert!(matches[4].is_some());
+            let targets: Vec<_> = matches.iter().flatten().copied().collect();
+            assert_eq!(targets.len(), coordinates.len());
+            assert_eq!(targets.iter().collect::<HashSet<_>>().len(), targets.len());
+            for ((chain, residue), coordinate) in targets.iter().zip(&coordinates) {
+                let index = query.get_index(chain, residue).unwrap();
+                assert!(coordinate.calc_distance(&query.ca_vector.get_coord(index).unwrap()) < 1e-5);
+            }
+        }
+    }
+
+    #[cfg(feature = "foldcomp")]
+    #[test]
+    fn foldcomp_replacement_preserves_coordinate_correspondence() {
+        let reader = FoldcompDbReader::new("data/foldcomp/example_db");
+        let query = reader.read_single_structure_by_id(0).unwrap().to_compact();
+        let path = String::from("data/foldcomp/example_db:d1asha_");
+        let residues = vec![(ChainId::from_byte(b'A'), 2), (ChainId::from_byte(b'A'), 3), (ChainId::from_byte(b'A'), 4)];
+        let (query_map, indices, aa_dist_map) = make_query_map(
+            &path, &residues, HashType::PDBTrRosetta, 16, 4, &None,
+            &ToleranceConfig::default_query(), &vec![None; 3], 20.0, true, &None, 1000.0,
+        );
+        let hashes = query_map.keys().cloned().collect();
+        let motif = vec![0, indices[0], indices[1], indices[1], indices[1], indices[2]];
+        let (_, hits, _, _, _) = retrieval_wrapper_for_foldcompdb(
+            0, 3, &hashes, HashType::PDBTrRosetta, 16, 4, &None, 20.0,
+            &query_map, &query, &motif, &aa_dist_map, 1.0, false, &reader,
+        );
+        assert!(!hits.is_empty());
+        for (matches, _, _, _, coordinates, _, _) in hits {
+            assert_eq!(matches.len(), motif.len());
+            assert!(matches[0].is_none());
+            assert!(matches[2].is_none());
+            assert!(matches[3].is_none());
+            assert!(matches[4].is_some());
+            let targets: Vec<_> = matches.iter().flatten().copied().collect();
+            assert_eq!(targets.len(), coordinates.len());
+            assert_eq!(targets.iter().collect::<HashSet<_>>().len(), targets.len());
+            for ((chain, residue), coordinate) in targets.iter().zip(&coordinates) {
+                let index = query.get_index(chain, residue).unwrap();
+                assert!(coordinate.calc_distance(&query.ca_vector.get_coord(index).unwrap()) < 1e-5);
+            }
+        }
     }
 
     #[test]
