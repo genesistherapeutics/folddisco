@@ -21,7 +21,7 @@ jobs:
         with:
           toolchain: stable
       - name: Run cargo test
-        run: cargo test -v
+        run: cargo test --locked -v
       - name: Build
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
