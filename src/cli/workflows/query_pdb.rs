@@ -25,6 +25,7 @@ use crate::controller::expand::{IndexExpansion, ToleranceConfig};
 use crate::controller::query::{index_matching_substitutions, make_query_map, parse_threshold_string, resolve_query_substitutions};
 use crate::controller::substitution::SubstitutionScheme;
 use crate::controller::count_query::count_query;
+use crate::controller::release_dates::ReleaseDates;
 use crate::controller::result::{
     convert_structure_query_result_to_match_query_results, format_residue_matches,
     sort_and_print_match_query_result, sort_and_print_structure_query_result, StructureResult
@@ -80,6 +81,8 @@ query expansion:
                                   Hits match query-side expansion within the tolerance; bin-rounding margins differ
 
 filtering options:
+ --released-before <YYYY-MM-DD>   Only search targets released strictly before this date; requires --release-dates
+ --release-dates <PATH>           Target release-date TSV; unknown dates are excluded. Corpus scoring is unchanged
  --total-match <INT>              Filter out structures with less than total match count [0]
  --covered-node <INT>             Filter out structures not covered by given number of nodes with hashes [0]
  --covered-node-ratio <FLOAT>     Filter out structures not covered by given ratio of nodes with hashes [0.0]
@@ -220,6 +223,8 @@ pub const NOVELTY_RMSD: f32 = 2.0;
 pub fn query_pdb(env: AppArgs) {
     match env {
         AppArgs::Query {
+            released_before,
+            release_dates,
             pdb_path,
             query_string,
             threads,
@@ -273,6 +278,10 @@ pub fn query_pdb(env: AppArgs) {
             help: _,
         } => {
             if verbose { print_logo(); }
+            if released_before.is_some() != release_dates.is_some() {
+                print_log_msg(FAIL, "--released-before and --release-dates must be supplied together");
+                std::process::exit(1);
+            }
             // --help is handled in main.rs
             if index_path.is_none() {
                 eprintln!("{}", HELP_QUERY);
@@ -361,6 +370,14 @@ pub fn query_pdb(env: AppArgs) {
             let (lookup_path, hash_type_path) = get_lookup_and_type(&index_prefix);
             let config = read_index_config_from_file(&hash_type_path);
             let lookup = measure_time!(load_lookup_from_file(&lookup_path), verbose);
+            let eligible_targets = release_dates.as_ref().map(|path| {
+                ReleaseDates::load(std::path::Path::new(path), &lookup)
+                    .and_then(|dates| dates.eligible_before(released_before.as_deref().unwrap()))
+                    .unwrap_or_else(|error| {
+                        print_log_msg(FAIL, &format!("Release-date filter: {}", error));
+                        std::process::exit(1);
+                    })
+            });
 
             
             let queries = if query_string.ends_with(".txt") || query_string.ends_with(".tsv") {
@@ -561,9 +578,10 @@ pub fn query_pdb(env: AppArgs) {
 
                 let query_count_map = measure_time!(count_query(
                     &pdb_query, &pdb_query_map, &index, &lookup,
-                    sampling_ratio, sampling_count, freq_filter, length_penalty
+                    sampling_ratio, sampling_count, freq_filter, length_penalty,
+                    eligible_targets.as_deref()
                 ), verbose);
-                // Evidence from the index before any filter ran
+                // Evidence from eligible index targets before score and geometry filters.
                 let novelty_candidates = query_count_map.len();
                 let novelty_index_coverage = if novelty_mode {
                     query_count_map.iter().map(|(_, v)| v.node_count).max().unwrap_or(0)
@@ -906,6 +924,8 @@ mod tests {
         let threads = 1;
         let index_path = Some(String::from("data/serine_peptidases_pdbtr_small"));
         let env = AppArgs::Query {
+            released_before: None,
+            release_dates: None,
             pdb_path,
             query_string,
             threads,
@@ -969,6 +989,8 @@ mod tests {
             let threads = 1;
             let index_path = Some(String::from("data/example_db_folddisco_db"));
             let env = AppArgs::Query {
+                released_before: None,
+                release_dates: None,
                 pdb_path,
                 query_string,
                 threads,
@@ -1032,6 +1054,8 @@ mod tests {
         let threads = 4;
         let index_path = Some(String::from("analysis/e_coli/test"));
         let env = AppArgs::Query {
+            released_before: None,
+            release_dates: None,
             pdb_path,
             query_string,
             threads, 
