@@ -51,6 +51,8 @@ fn parse_arg() -> Result<AppArgs, Box<dyn std::error::Error>> {
             help: args.contains(["-h", "--help"]),
         }),
         Some("query") => Ok(AppArgs::Query {
+            released_before: args.opt_value_from_str("--released-before")?,
+            release_dates: args.opt_value_from_str("--release-dates")?,
             pdb_path: args.value_from_str(["-p", "--pdb"]).unwrap_or("".into()),
             query_string: args.value_from_str(["-q", "--query"]).unwrap_or("".into()),
             threads: args.value_from_str(["-t", "--threads"]).unwrap_or(1),

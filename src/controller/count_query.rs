@@ -88,13 +88,18 @@ impl Default for CompactEntry {
 /// scaled by `nres^-length_penalty` (default 0.5).
 /// Substituted hashes add only their weighted IDF, once per edge, and only to targets
 /// without an exact hit on that edge.
+/// Eligibility is indexed by posting ordinal; corpus frequencies and sampling remain unchanged.
 pub fn count_query<'a>(
     queries: &Vec<GeometricHash>, query_map: &QueryHashMap,
     index: &FolddiscoIndex,
     lookup: &'a LookupTable, 
     sampling_ratio: Option<f32>, sampling_count: Option<usize>,
     freq_filter: Option<f32>, length_penalty_power: Option<f32>,
+    eligible_targets: Option<&[bool]>,
 ) -> Vec<(usize, StructureResult<'a>)> {
+    if let Some(eligible) = eligible_targets {
+        assert_eq!(eligible.len(), lookup.len(), "Target eligibility must match lookup length");
+    }
     let queries_to_iter = sample_query(queries, index, sampling_ratio, sampling_count);
     let num_ids = lookup.len();
     let lp = length_penalty_power.unwrap_or(0.5);
@@ -154,6 +159,9 @@ pub fn count_query<'a>(
 
                 for &value in single_queried_values.iter() {
                     if value >= lookup.len() {
+                        continue;
+                    }
+                    if eligible_targets.is_some_and(|eligible| !eligible[value]) {
                         continue;
                     }
                 
@@ -326,9 +334,9 @@ mod tests {
         GeometricHash::from_u32(value, HashType::PDBTrRosetta)
     }
 
-    #[test]
-    fn substituted_hits_count_once_per_edge_and_only_without_an_exact_hit() {
-        let dir = std::env::temp_dir().join(format!("folddisco_count_query_{}", std::process::id()));
+    fn fixture() -> (std::path::PathBuf, FolddiscoIndex, LookupTable, QueryHashMap, Vec<GeometricHash>) {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("folddisco_count_query_{}_{}", std::process::id(), nonce));
         std::fs::create_dir_all(&dir).unwrap();
         let prefix = dir.join("idx").to_string_lossy().to_string();
 
@@ -360,7 +368,14 @@ mod tests {
         query_map.insert(hash(3), entry((0, 2), 0.25, 2.0));
         let queries = (0..4).map(hash).collect::<Vec<_>>();
 
-        let mut results = count_query(&queries, &query_map, &index, &lookup, None, None, None, None);
+        (dir, index, lookup, query_map, queries)
+    }
+
+    #[test]
+    fn substituted_hits_count_once_per_edge_and_only_without_an_exact_hit() {
+        let (dir, index, lookup, query_map, queries) = fixture();
+
+        let mut results = count_query(&queries, &query_map, &index, &lookup, None, None, None, None, None);
         results.sort_by_key(|(id, _)| *id);
         let idf = |i: usize| results[i].1.idf;
         // Exact hit only; its IDF is recomputed from the index (3 structures, 1 hit)
@@ -370,6 +385,54 @@ mod tests {
         assert!((idf(2) - 0.5).abs() < 1e-5, "{}", idf(2));
         // Coverage counts every hit
         assert_eq!((results[0].1.edge_count, results[0].1.total_match_count), (1, 3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn eligibility_excludes_the_best_hit_before_top_n_without_changing_scores() {
+        let (dir, index, lookup, query_map, queries) = fixture();
+        let unfiltered = count_query(&queries, &query_map, &index, &lookup, None, None, None, None, None);
+        let mut filtered = count_query(
+            &queries, &query_map, &index, &lookup, None, None, None, None, Some(&[false, true, true]),
+        );
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|(id, _)| *id != 0));
+        for (id, result) in &filtered {
+            let original = &unfiltered.iter().find(|(original_id, _)| original_id == id).unwrap().1;
+            assert_eq!(result.idf, original.idf);
+            assert_eq!(result.total_match_count, original.total_match_count);
+            assert_eq!(result.node_count, original.node_count);
+            assert_eq!(result.edge_count, original.edge_count);
+        }
+        filtered.sort_by(|a, b| b.1.idf.partial_cmp(&a.1.idf).unwrap());
+        filtered.truncate(1);
+        assert_eq!(filtered[0].0, 1);
+        let exact_only = count_query(
+            &queries, &query_map, &index, &lookup, None, None, None, None, Some(&[true, false, false]),
+        );
+        assert_eq!(exact_only.len(), 1);
+        assert_eq!(exact_only[0].1.idf, unfiltered.iter().find(|(id, _)| *id == 0).unwrap().1.idf);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn all_eligible_matches_unfiltered_sampling_and_frequency_filters() {
+        let (dir, index, lookup, query_map, queries) = fixture();
+        for (ratio, count, frequency) in [(None, None, None), (None, Some(2), None), (Some(0.5), None, Some(0.5))] {
+            let summarize = |eligibility| {
+                let mut results = count_query(
+                    &queries, &query_map, &index, &lookup, ratio, count, frequency, None, eligibility,
+                ).into_iter().map(|(id, result)| {
+                    (id, result.idf, result.total_match_count, result.node_count, result.edge_count)
+                }).collect::<Vec<_>>();
+                results.sort_by_key(|result| result.0);
+                results
+            };
+            assert_eq!(summarize(None), summarize(Some(&[true, true, true])));
+        }
+        assert!(count_query(
+            &queries, &query_map, &index, &lookup, None, None, None, None, Some(&[false; 3]),
+        ).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
