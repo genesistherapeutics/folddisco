@@ -133,6 +133,8 @@ folddisco query -i index/h_sapiens_folddisco -q query/serine_peptidase.txt
 ## Commands
 
 ### Usage of Query Module
+
+To restrict candidates by initial public release date before scoring and `--top`, use `--release-dates dates.tsv --released-before YYYY-MM-DD`. See [release-date filtering](docs/release-date-filter.md) for metadata requirements and cutoff semantics.
 ```bash
 folddisco query -i <INDEX> -p <QUERY_PDB> [-q <QUERY_RESIDUES> -d <DISTANCE_THRESHOLD> -a <ANGLE_THRESHOLD> --skip-match -t <THREADS>]
 ```

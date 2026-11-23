@@ -36,6 +36,8 @@ pub enum AppArgs {
         help: bool,
     },
     Query {
+        released_before: Option<String>,
+        release_dates: Option<String>,
         pdb_path: String,
         query_string: String,
         threads: usize,
